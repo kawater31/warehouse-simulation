@@ -1,0 +1,6 @@
+salabim>=24.0
+greenlet>=3.0
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+networkx>=3.0
