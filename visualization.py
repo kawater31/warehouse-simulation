@@ -232,13 +232,21 @@ def attach_animation(env, agvs, energy_lights, sls_by_seg):
 
     # --- AGVs: red circles labelled with AGV id -----------------------------
     for agv in agvs:
+    # 1. El cuerpo del AGV (sin texto)
         sim.AnimateCircle(
             radius=0.8,
             x=lambda t, a=agv: a.x,
             y=lambda t, a=agv: a.y,
             fillcolor="#e63946",
-            linecolor="black",
+            linecolor="black"
+        )
+    
+    # 2. El ID como un objeto de texto separado
+        sim.AnimateText(
             text=lambda t, a=agv: str(a.agv_id),
-            textcolor="white",
-            fontsize=14,
+            x=lambda t, a=agv: a.x,
+            y=lambda t, a=agv: a.y + 1.2, # Un poco arriba del centro
+            fontsize=12,
+            font="Arial",
+            textcolor="black"
         )
