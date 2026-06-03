@@ -238,7 +238,7 @@ def attach_animation(env, agvs, energy_lights, sls_by_seg):
         color_agv = colores[agv.agv_id % len(colores)]
     
         sim.AnimateCircle(
-            radius=0.8,
+            radius=1,
             x=lambda t, a=agv: a.x,
             y=lambda t, a=agv: a.y,
             fillcolor=color_agv,
@@ -263,3 +263,55 @@ def attach_animation(env, agvs, energy_lights, sls_by_seg):
             y=y_leyenda,
             fontsize=2.5
         )
+#New code for plots 
+def plot_lighting_energy_pct_diff(kpis: List[KPIBundle], out_dir: str = cfg.RESULTS_DIR) -> str:
+    """Bar chart of lighting-only energy % difference vs the always_on baseline."""
+    os.makedirs(out_dir, exist_ok=True)
+
+    baseline = next((k for k in kpis if k.scenario == "always_on"), None)
+    if baseline is None or baseline.lighting_energy_wh == 0:
+        print("  [!] plot_lighting_energy_pct_diff: no always_on baseline found, skipping.")
+        return ""
+
+    comparators = [k for k in kpis if k.scenario != "always_on"]
+    labels   = [k.scenario for k in comparators]
+    pct_diff = [
+        (k.lighting_energy_wh - baseline.lighting_energy_wh)
+        / baseline.lighting_energy_wh * 100
+        for k in comparators
+    ]
+    abs_wh   = [k.lighting_energy_wh for k in comparators]
+
+    colors = ["#2a9d8f", "#e76f51", "#457b9d", "#f4b942"]  # extend if >4 scenarios
+    bar_colors = colors[: len(comparators)]
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    bars = ax.bar(labels, pct_diff, color=bar_colors, zorder=3)
+    ax.axhline(0, color="gray", linewidth=1.2, linestyle="--", zorder=2,
+               label=f"always_on baseline ({baseline.lighting_energy_wh:.0f} Wh)")
+
+    ax.set_ylabel("Lighting energy vs always_on (%)")
+    ax.set_title("Lighting energy % difference vs always_on baseline")
+    ax.legend(fontsize=9)
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%+.1f%%"))
+    ax.set_ylim(min(pct_diff) * 1.25 - 5, max(max(pct_diff) * 1.25, 5))
+    ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=1)
+
+    # Annotate each bar with both % and absolute Wh
+    for bar, pct, wh in zip(bars, pct_diff, abs_wh):
+        va   = "top"    if pct < 0 else "bottom"
+        ypos = bar.get_y() + bar.get_height() if pct < 0 else bar.get_y() + bar.get_height()
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            ypos,
+            f"{pct:+.1f}%\n({wh:.0f} Wh)",
+            ha="center", va=va, fontsize=9,
+        )
+
+    plt.tight_layout()
+    path = os.path.join(out_dir, "lighting_energy_pct_diff.png")
+    plt.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"  -> wrote {path}")
+    return path
