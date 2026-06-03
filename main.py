@@ -7,6 +7,7 @@ from typing import List
 import config as cfg
 from kpi import compute_kpis, print_kpi_summary, write_kpi_csv
 from scenarios import run_scenario, SimResult
+from visualization import plot_lighting_energy_pct_diff
 
 
 SCENARIOS = ("always_on", "sensor_based", "route_based")
@@ -78,8 +79,12 @@ def main():
             kpis.append(k)
 
         if not args.no_plot:
+            # Cleaned up and properly formatted local import
             from visualization import plot_scenario_comparison, plot_warehouse_layout
+
+            # Executing the visualizer functions sequentially
             plot_scenario_comparison(kpis)
+            plot_lighting_energy_pct_diff(kpis)
             plot_warehouse_layout()
     else:
         run_one(args.scenario, args.duration, args.seed, args.animate)
