@@ -1,9 +1,4 @@
-"""PickupLocation: a server that holds an AGV for PICKUP_TIME_S.
-
-Pattern: AGV enters the location's queue and passivates. The PickupLocation
-process pops the queue, holds for the pickup duration, then re-activates the
-AGV.
-"""
+"""PickupLocation: holds an AGV for the pickup time, then releases it."""
 from __future__ import annotations
 
 import salabim as sim
@@ -12,7 +7,6 @@ import config as cfg
 
 
 class PickupLocation(sim.Component):
-    """Pickup-point server."""
 
     def setup(  # type: ignore[override]
         self,

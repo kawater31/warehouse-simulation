@@ -1,20 +1,8 @@
-"""Warehouse layout: aisles, cross-aisles, pickup points, lights and sensors.
+"""I-shape warehouse layout: aisles, cross-aisles, pickup points and lights.
 
-The layout follows the I-shape design described in the report:
-    - Base zone occupies x in [0, 7], full height in y.
-    - Rack/aisle area occupies x in [7, 70].
-    - Pattern (left-to-right): R A R A ... R A (14 racks alternating with 14 aisles).
-    - Three horizontal cross-aisles (bottom, middle, top) of 3.5 m height each.
-    - Two rack segments (bottom, top) of 12.25 m height each.
-
-Coordinate convention:
-    x = horizontal position along the 70 m length (0 at left wall / base)
-    y = vertical position along the 35 m width   (0 at bottom wall)
-
-Numbering convention:
-    aisles    1..14 (left-to-right)
-    cross-aisles "bottom", "middle", "top"
-    rack segments "bottom", "top"   (bottom = y < middle cross-aisle)
+x runs along the 70 m length (0 at the base), y along the 35 m width. The
+rack/aisle area is a left-to-right R A R A ... pattern of 14 racks and aisles,
+split by three cross-aisles (bottom, middle, top) into two rack segments.
 """
 from __future__ import annotations
 
@@ -28,13 +16,7 @@ import config as cfg
 # Geometry helpers
 # ---------------------------------------------------------------------------
 def aisle_center_x(aisle_idx: int) -> float:
-    """Return the centerline x-coordinate of picking aisle `aisle_idx` (1-based).
-
-    Pattern R A R A ... starting at x = RACK_AREA_X_START:
-        Rack k:  x in [start + (k-1)*(R+A),  start + (k-1)*(R+A) + R]
-        Aisle k: x in [start + (k-1)*(R+A) + R,  start + k*(R+A)]
-    So aisle k's center = start + (k-1)*(R+A) + R + A/2.
-    """
+    """Centerline x of picking aisle `aisle_idx` (1-based)."""
     if not (1 <= aisle_idx <= cfg.N_AISLES):
         raise ValueError(f"aisle_idx {aisle_idx} out of range")
     step = cfg.RACK_WIDTH + cfg.AISLE_WIDTH
@@ -83,12 +65,10 @@ class PickupPoint:
 
 
 def build_pickup_points() -> List[PickupPoint]:
-    """Build the canonical list of unique pickup (x,y) locations.
+    """One pickup per (aisle, segment, index): 14 x 2 x 12 = 336 locations.
 
-    Each (aisle, segment, index) tuple is unique. The 'side' of the rack
-    (left vs right) is irrelevant for routing since both sides share the
-    same picking-aisle centerline, so we collapse them. 14 aisles x
-    2 segments x 12 indices = 336 routing-distinct pickup locations.
+    Left and right rack sides share the aisle centerline, so they collapse to
+    one routing location.
     """
     points: List[PickupPoint] = []
     pid = 0
@@ -118,20 +98,12 @@ def build_pickup_points() -> List[PickupPoint]:
 # ---------------------------------------------------------------------------
 @dataclass
 class Segment:
-    """A logical zone of the warehouse covered by one sensor / one+ lights.
-
-    A segment groups together (a) a geometric region that an AGV can traverse,
-    (b) the sensor that fires when an AGV enters it, and (c) the lights that
-    illuminate that region.
-    """
-    seg_id: str                   # unique key, e.g. "aisle_3_top" or "xa_middle_5"
+    """A warehouse zone with one sensor and one or more lights."""
+    seg_id: str                   # e.g. "aisle_3_top" or "xa_middle_5"
     kind: str                     # "base" | "cross_aisle" | "picking_aisle"
-    # geometry hints for animation / debug
     x_range: Tuple[float, float]
     y_range: Tuple[float, float]
-    # back-references; populated during build
     lights: List["Light"] = field(default_factory=list)
-    # entry/exit nodes in the routing graph (set later by routing module)
     entry_nodes: Tuple[str, ...] = ()
 
 
@@ -161,18 +133,11 @@ SEG_ID_BASE = "base"
 
 
 def build_layout() -> Tuple[List[Segment], List[Light], List[PickupPoint]]:
-    """Construct segments, lights and pickup points for the warehouse.
-
-    Returns
-    -------
-    segments : List[Segment]
-    lights   : List[Light]
-    pickups  : List[PickupPoint]
-    """
+    """Build the segments, lights and pickup points for the warehouse."""
     segments: List[Segment] = []
     lights: List[Light] = []
 
-    # --- Base segment: covers x in [0, 7], full height -----------------------
+    # base segment + 3 base lights
     base_seg = Segment(
         seg_id=SEG_ID_BASE,
         kind="base",
@@ -181,7 +146,6 @@ def build_layout() -> Tuple[List[Segment], List[Light], List[PickupPoint]]:
     )
     segments.append(base_seg)
 
-    # 3 base lights, distributed along y at the base centerline x.
     base_x = cfg.BASE_WIDTH / 2
     for i in range(cfg.N_BASE_LIGHTS):
         y = (i + 1) / (cfg.N_BASE_LIGHTS + 1) * cfg.WAREHOUSE_WIDTH
@@ -197,7 +161,7 @@ def build_layout() -> Tuple[List[Segment], List[Light], List[PickupPoint]]:
         lights.append(light)
         base_seg.lights.append(light)
 
-    # --- Picking-aisle segments (28 total) -----------------------------------
+    # picking-aisle segments (28), one light each
     for aisle in range(1, cfg.N_AISLES + 1):
         ax = aisle_center_x(aisle)
         for seg_name in ("bottom", "top"):
@@ -208,7 +172,6 @@ def build_layout() -> Tuple[List[Segment], List[Light], List[PickupPoint]]:
                 x_range=(ax - cfg.AISLE_WIDTH / 2, ax + cfg.AISLE_WIDTH / 2),
                 y_range=(y_min, y_max),
             )
-            # one light centered in the segment
             light = Light(
                 light_id=f"main_aisle{aisle}_{seg_name}",
                 kind="main",
@@ -222,10 +185,8 @@ def build_layout() -> Tuple[List[Segment], List[Light], List[PickupPoint]]:
             seg.lights.append(light)
             segments.append(seg)
 
-    # --- Cross-aisle sub-segments (42 total) ---------------------------------
-    # Each cross-aisle is split into 14 sub-segments, one centered on each
-    # picking-aisle column. Each sub-segment has 1 light + 1 sensor.
-    sub_seg_x_half = (cfg.RACK_WIDTH + cfg.AISLE_WIDTH) / 2  # 2.25 m
+    # cross-aisle sub-segments (42): one per cross-aisle per aisle column
+    sub_seg_x_half = (cfg.RACK_WIDTH + cfg.AISLE_WIDTH) / 2
     for xa_name in CROSS_AISLE_NAMES:
         y_center = CROSS_AISLE_Y[xa_name]
         y_min = y_center - cfg.CROSS_AISLE_WIDTH / 2
@@ -255,20 +216,5 @@ def build_layout() -> Tuple[List[Segment], List[Light], List[PickupPoint]]:
     return segments, lights, pickups
 
 
-# ---------------------------------------------------------------------------
-# Convenience lookups
-# ---------------------------------------------------------------------------
 def segments_by_id(segments: List[Segment]) -> dict[str, Segment]:
     return {s.seg_id: s for s in segments}
-
-
-if __name__ == "__main__":  # smoke test
-    segs, lts, pks = build_layout()
-    print(f"segments: {len(segs)}")
-    print(f"lights:   {len(lts)}  (base={sum(1 for l in lts if l.kind=='base')}, "
-          f"main={sum(1 for l in lts if l.kind=='main')}, "
-          f"xa={sum(1 for l in lts if l.kind=='cross_aisle')})")
-    print(f"pickups:  {len(pks)}")
-    print(f"aisle 1 center x  = {aisle_center_x(1):.2f}")
-    print(f"aisle 14 center x = {aisle_center_x(14):.2f}")
-    print(f"CROSS_AISLE_Y     = {CROSS_AISLE_Y}")

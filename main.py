@@ -43,16 +43,29 @@ def parse_args():
         action="store_true",
         help="Skip generating the comparison PNG.",
     )
+    p.add_argument(
+        "--trace",
+        action="store_true",
+        help="Write a salabim event trace to results/trace_<scenario>.log.",
+    )
+    p.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Disable built-in run-time invariant checks.",
+    )
     return p.parse_args()
 
 
-def run_one(scenario: str, duration: float, seed: int, animate: bool, plots: bool = True):
+def run_one(scenario: str, duration: float, seed: int, animate: bool, plots: bool = True,
+            trace: bool = False, verify: bool = True):
     print(f"\n>>> running scenario: {scenario}  (duration={duration:.0f}s, seed={seed})")
     result: SimResult = run_scenario(
         scenario=scenario,
         duration_s=duration,
         seed=seed,
         animate=animate,
+        trace=trace,
+        verify=verify,
     )
     kpi = compute_kpis(result)
     print_kpi_summary(kpi)
@@ -74,20 +87,19 @@ def main():
         results = []
         kpis = []
         for s in SCENARIOS:
-            r, k = run_one(s, args.duration, args.seed, animate=False)
+            r, k = run_one(s, args.duration, args.seed, animate=False,
+                           trace=args.trace, verify=not args.no_verify)
             results.append(r)
             kpis.append(k)
 
         if not args.no_plot:
-            # Cleaned up and properly formatted local import
             from visualization import plot_scenario_comparison, plot_warehouse_layout
-
-            # Executing the visualizer functions sequentially
             plot_scenario_comparison(kpis)
             plot_lighting_energy_pct_diff(kpis)
             plot_warehouse_layout()
     else:
-        run_one(args.scenario, args.duration, args.seed, args.animate)
+        run_one(args.scenario, args.duration, args.seed, args.animate,
+                trace=args.trace, verify=not args.no_verify)
 
 
 if __name__ == "__main__":

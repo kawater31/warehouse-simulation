@@ -1,13 +1,8 @@
-"""Static plots + salabim animation hooks.
-
-Static plotting (matplotlib) is implemented eagerly so we can sanity-check
-results. The animation function `attach_animation` is implemented further
-down and is only invoked when --animate is passed.
-"""
+"""Static matplotlib plots and the salabim animation."""
 from __future__ import annotations
 
 import os
-from typing import Dict, List
+from typing import List
 
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend for static plots
@@ -157,24 +152,21 @@ def plot_warehouse_layout(out_dir: str = cfg.RESULTS_DIR) -> str:
 # =========================================================================
 # Animation (optional)
 # =========================================================================
-def attach_animation(env, agvs, energy_lights, sls_by_seg):
-    """Draw the warehouse layout + AGVs + light states using salabim's animation.
-
-    World coordinates: we map the 70 m x 35 m warehouse to a window with
-    a small margin. salabim then handles px-conversion internally so we
-    can pass values straight in metres.
-    """
+def attach_animation(env, agvs, energy_lights, sls_by_seg, order_gen=None, recorder=None,
+                     scenario=""):
+    """Draw the warehouse, AGVs, light states and a live stats panel."""
     import salabim as sim
     import layout as L
 
-    # World coordinate system: warehouse 70 x 35, with a 5 m margin.
+    # Coordinates are in metres. Extra window height leaves a band above the
+    # warehouse (y > 35) for the stats panel; modelname is blank to avoid overlap.
     env.animation_parameters(
         animate=True,
         speed=20.0,                # 20x real-time
-        modelname="Warehouse Smart Lighting",
+        modelname="",
         background_color="white",
         x0=-5, y0=-5, x1=75,
-        width=1100, height=560,
+        width=1100, height=820,
         show_fps=False,
         show_time=True,
     )
@@ -194,7 +186,7 @@ def attach_animation(env, agvs, energy_lights, sls_by_seg):
         linecolor="gray",
     )
 
-    # Racks (re-derive layout.py geometry)
+    # Racks
     rack_step = L.cfg.RACK_WIDTH + L.cfg.AISLE_WIDTH
     bottom_top_y = L.cfg.CROSS_AISLE_WIDTH + L.cfg.RACK_SEGMENT_HEIGHT + L.cfg.CROSS_AISLE_WIDTH
     for k in range(1, L.cfg.N_RACKS + 1):
@@ -213,11 +205,34 @@ def attach_animation(env, agvs, energy_lights, sls_by_seg):
             linecolor="gray",
         )
 
-    # --- lights: yellow when on, gray when off -------------------------------
+    # sensor zones: outline every segment, highlight active ones in orange
+    segments = L.build_layout()[0]
+
+    def _zone_line(s):
+        return lambda t: "#ff7700" if (s.occupancy > 0 or s.route_active) else "#dddddd"
+
+    def _zone_fill(s):
+        return lambda t: ("#ffa500", 70) if (s.occupancy > 0 or s.route_active) else ""
+
+    for seg in segments:
+        if seg.kind == "base":
+            continue
+        sls = sls_by_seg.get(seg.seg_id)
+        if sls is None:
+            continue
+        x0, x1 = seg.x_range
+        y0_, y1_ = seg.y_range
+        sim.AnimateRectangle(
+            spec=(x0, y0_, x1, y1_),
+            fillcolor=_zone_fill(sls),
+            linecolor=_zone_line(sls),
+            linewidth=0.08,
+        )
+
+    # lights: yellow when on, gray when off
     layout_lights_by_id = {ll.light_id: ll for ll in L.build_layout()[1]}
 
     def make_color(el):
-        # capture el by argument to avoid late-binding
         return lambda t: "#ffd23f" if el.state == "on" else "#bbbbbb"
 
     for light_id, el in energy_lights.items():
@@ -230,42 +245,82 @@ def attach_animation(env, agvs, energy_lights, sls_by_seg):
             linewidth=0.05,
         )
 
-    # AGVs: different color
-    colores = ["#e63946", "#457b9d", "#2a9d8f"] # Rojo, Azul, Verde
+    # AGVs as coloured circles (AGV 1 -> colors[0] to match the legend)
+    colors = ["#e63946", "#457b9d", "#2a9d8f"]
 
     for agv in agvs:
-        
-        color_agv = colores[agv.agv_id % len(colores)]
-    
         sim.AnimateCircle(
             radius=1,
             x=lambda t, a=agv: a.x,
             y=lambda t, a=agv: a.y,
-            fillcolor=color_agv,
-            linecolor="black"
+            fillcolor=colors[(agv.agv_id - 1) % len(colors)],
+            linecolor="black",
         )
 
-    start_x = 10 
-    y_leyenda = -3
+    # legend
+    legend_x = 10
+    legend_y = -3
+    for i, color in enumerate(colors):
+        sim.AnimateCircle(radius=0.75, x=legend_x + i * 10, y=legend_y, fillcolor=color)
+        sim.AnimateText(text=f"AGV {i+1}", x=legend_x + i * 10 + 1.5, y=legend_y,
+                        fontsize=2.5)
 
-    for i, color in enumerate(colores):
-    # Colored circles
-        sim.AnimateCircle(
-            radius=0.75,
-            x=start_x + (i * 10), 
-            y=y_leyenda,
-            fillcolor=color
-        )  
-    # Text
-        sim.AnimateText(
-            text=f"AGV {i+1}",
-            x=start_x + (i * 10) + 1.5,
-            y=y_leyenda,
-            fontsize=2.5
+    # live stats panel, in the band above the warehouse
+    sim.AnimateText(text=f"scenario: {scenario}", x=0.5, y=53, text_anchor="w",
+                    fontsize=2.0, textcolor="black")
+
+    def _line_flow(t):
+        # `t` is the smooth animation time (env.now() only advances at events)
+        now = t
+        created = order_gen.next_order_id if order_gen is not None else 0
+        completed = sum(a.orders_served for a in agvs)
+        if order_gen is not None:
+            cts = [o.cycle_time for o in order_gen.orders_created
+                   if o.completion_time is not None]
+            tput = sum(cts) / len(cts) if cts else 0.0
+        else:
+            tput = 0.0
+        return (f"t = {now:.0f} s    orders: {completed}/{created} done    "
+                f"avg throughput: {tput:.0f} s")
+
+    def _line_energy(t):
+        now = t
+        lit = sum(1 for el in energy_lights.values() if el.state == "on")
+        light_wh = sum(el.live_energy_wh(now) for el in energy_lights.values())
+        agv_wh = sum(a.total_distance_m for a in agvs) * cfg.AGV_ENERGY_PER_M
+        return (f"lights on: {lit}/{len(energy_lights)}    "
+                f"lighting: {light_wh:.0f} Wh    AGV: {agv_wh:.0f} Wh    "
+                f"total: {light_wh + agv_wh:.0f} Wh")
+
+    sim.AnimateText(text=_line_flow, x=0.5, y=50.5, text_anchor="w",
+                    fontsize=1.4, textcolor="black")
+    sim.AnimateText(text=_line_energy, x=0.5, y=48.5, text_anchor="w",
+                    fontsize=1.4, textcolor="black")
+
+    def _agv_stats(a):
+        def f(t):
+            return f"AGV {a.agv_id}:  {a.total_distance_m:.0f} m   {a.orders_served} orders"
+        return f
+
+    for i, agv in enumerate(agvs):
+        sim.AnimateText(text=_agv_stats(agv), x=0.5, y=46 - i * 2.0,
+                        text_anchor="w", fontsize=1.4,
+                        textcolor=colors[(agv.agv_id - 1) % len(colors)])
+
+    # live graph: number of lit fixtures over time
+    if recorder is not None:
+        sim.AnimateMonitor(
+            recorder.lights_on,
+            x=300, y=-3, width=650, height=70,
+            horizontal_scale=0.02,
+            vertical_scale=0.8,
+            linecolor="#f4b942", linewidth=1,
+            title="lights on (live)", titlecolor="black",
         )
-#New code for plots 
+
+
 def plot_lighting_energy_pct_diff(kpis: List[KPIBundle], out_dir: str = cfg.RESULTS_DIR) -> str:
-    """Bar chart of lighting-only energy % difference vs the always_on baseline."""
+    """Bar chart of lighting energy % difference vs the always_on baseline."""
     os.makedirs(out_dir, exist_ok=True)
 
     baseline = next((k for k in kpis if k.scenario == "always_on"), None)

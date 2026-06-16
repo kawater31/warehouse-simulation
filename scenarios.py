@@ -13,6 +13,7 @@ from components.agv import AGV
 from components.light import Light as EnergyLight
 from components.order_generator import OrderGenerator
 from components.pickup_location import PickupLocation
+from components.recorder import Recorder
 from components.sls import SmartLightingSystem
 from routing import build_graph
 
@@ -25,8 +26,10 @@ class SimResult:
     agvs: List[AGV]
     orders_created: int = 0
     orders_completed: int = 0
-    completed_orders: list = field(default_factory=list)  # list[Order]
+    completed_orders: list = field(default_factory=list)
+    all_orders: list = field(default_factory=list)      # incl. in-flight orders
     sls_by_seg: Dict[str, SmartLightingSystem] = field(default_factory=dict)
+    recorder: object = None
 
 
 def _build_environment(
@@ -34,44 +37,38 @@ def _build_environment(
     duration_s: float,
     seed: int,
     animate: bool = False,
+    trace: bool = False,
 ):
     """Wire up all components for a single scenario run."""
-    sim.yieldless(False)  # use yield-based generator components (see components/*)
-    env = sim.Environment(trace=False, random_seed=seed, time_unit="seconds")
+    sim.yieldless(False)
+    env = sim.Environment(trace=trace, random_seed=seed, time_unit="seconds")
 
-    # 1) Build the static warehouse layout & routing graph -------------------
     segments, layout_lights, pickup_points = layout.build_layout()
     graph = build_graph(pickup_points)
 
-    # 2) Build the energy-accounting Light objects (one per layout.Light).
-    #    Index them by their stable light_id so the SLS knows what to toggle.
+    # energy-accounting lights, indexed by light_id
     energy_lights: Dict[str, EnergyLight] = {}
     for ll in layout_lights:
         el = EnergyLight(light_id=ll.light_id, power_w=ll.power_w, env=env)
         el.bind(env)
         energy_lights[ll.light_id] = el
 
-    # Map: segment_id -> list[EnergyLight covering that segment]
     seg_to_lights: Dict[str, List[EnergyLight]] = {s.seg_id: [] for s in segments}
     for ll in layout_lights:
         seg_to_lights[ll.segment_id].append(energy_lights[ll.light_id])
 
-    # 3) Build one SmartLightingSystem per segment ----------------------------
     sls_by_seg: Dict[str, SmartLightingSystem] = {}
     for seg in segments:
-        sls = SmartLightingSystem(
+        sls_by_seg[seg.seg_id] = SmartLightingSystem(
             name=f"sls_{seg.seg_id}",
             seg_id=seg.seg_id,
             lights=seg_to_lights[seg.seg_id],
         )
-        sls_by_seg[seg.seg_id] = sls
 
-    # 4) Always-on baseline: turn every light ON at t=0 and leave it on.
     if scenario == "always_on":
         for el in energy_lights.values():
             el.turn_on()
 
-    # 5) Build PickupLocations (one per pickup point) -------------------------
     pickup_locations: Dict[int, PickupLocation] = {}
     for p in pickup_points:
         pickup_locations[p.pickup_id] = PickupLocation(
@@ -79,14 +76,11 @@ def _build_environment(
             pickup_id=p.pickup_id,
         )
 
-    # 6) Shared order queue. Plain deque because Order is a dataclass, not
-    #    a sim.Component (which is what sim.Queue expects).
-    order_queue = deque()
+    order_queue = deque()  # plain deque: Order is a dataclass, not a sim.Component
 
-    # 7) AGVs -----------------------------------------------------------------
     agvs: List[AGV] = []
     for i in range(1, cfg.N_AGVS + 1):
-        agv = AGV(
+        agvs.append(AGV(
             name=f"agv_{i}",
             agv_id=i,
             order_queue=order_queue,
@@ -94,10 +88,8 @@ def _build_environment(
             pickup_locations=pickup_locations,
             sls_by_seg=sls_by_seg,
             lighting_mode=scenario,
-        )
-        agvs.append(agv)
+        ))
 
-    # 8) Order generator ------------------------------------------------------
     pickup_ids = [p.pickup_id for p in pickup_points]
     order_gen = OrderGenerator(
         name="order_generator",
@@ -107,7 +99,14 @@ def _build_environment(
         rng_seed=seed,
     )
 
-    return env, agvs, energy_lights, sls_by_seg, order_gen
+    recorder = Recorder(
+        name="recorder",
+        order_queue=order_queue,
+        energy_lights=energy_lights,
+        sls_by_seg=sls_by_seg,
+    )
+
+    return env, agvs, energy_lights, sls_by_seg, order_gen, recorder
 
 
 def run_scenario(
@@ -115,29 +114,41 @@ def run_scenario(
     duration_s: float = cfg.SHIFT_DURATION_S,
     seed: int = cfg.RANDOM_SEED,
     animate: bool = False,
+    trace: bool = False,
+    verify: bool = True,
 ) -> SimResult:
     assert scenario in {"always_on", "sensor_based", "route_based"}
 
-    env, agvs, energy_lights, sls_by_seg, order_gen = _build_environment(
+    env, agvs, energy_lights, sls_by_seg, order_gen, recorder = _build_environment(
         scenario=scenario,
         duration_s=duration_s,
         seed=seed,
         animate=animate,
+        trace=trace,
     )
 
     if animate:
         from visualization import attach_animation
-        attach_animation(env, agvs, energy_lights, sls_by_seg)
+        attach_animation(env, agvs, energy_lights, sls_by_seg, order_gen, recorder,
+                         scenario=scenario)
 
-    env.run(till=duration_s)
+    if trace:
+        import contextlib
+        import os
+        os.makedirs(cfg.RESULTS_DIR, exist_ok=True)
+        trace_path = os.path.join(cfg.RESULTS_DIR, f"trace_{scenario}.log")
+        with open(trace_path, "w") as f, contextlib.redirect_stdout(f):
+            env.run(till=duration_s)
+        print(f"  -> wrote {trace_path}")
+    else:
+        env.run(till=duration_s)
 
-    # Finalise lights so any still-on lights accumulate their residual on-time.
     for el in energy_lights.values():
         el.finalise()
 
     completed_orders = [o for o in order_gen.orders_created if o.completion_time is not None]
 
-    return SimResult(
+    result = SimResult(
         scenario=scenario,
         duration_s=duration_s,
         lights=list(energy_lights.values()),
@@ -145,5 +156,22 @@ def run_scenario(
         orders_created=len(order_gen.orders_created),
         orders_completed=len(completed_orders),
         completed_orders=completed_orders,
+        all_orders=list(order_gen.orders_created),
         sls_by_seg=sls_by_seg,
+        recorder=recorder,
     )
+
+    if verify:
+        from verification import assert_invariants
+        errors = assert_invariants(result)
+        if errors:
+            print(f"  [verify] {len(errors)} INVARIANT VIOLATION(S) in {scenario}:")
+            for e in errors:
+                print("   -", e)
+            raise AssertionError(f"invariant violations in {scenario}")
+        print(f"  [verify] all post-run invariants passed ({scenario}); "
+              f"queue mean={recorder.qlen.mean():.2f}, "
+              f"lights-on mean={recorder.lights_on.mean():.1f}, "
+              f"occupancy max={recorder.occupancy.maximum():.0f}")
+
+    return result

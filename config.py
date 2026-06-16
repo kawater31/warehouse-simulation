@@ -1,8 +1,4 @@
-"""Global parameters for the warehouse simulation.
-
-All locked-in values from the system spec live here so every other module
-imports from a single source of truth.
-"""
+"""Global parameters for the warehouse simulation."""
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -43,8 +39,7 @@ PICKUP_POINTS_PER_SIDE_PER_SEGMENT: int = 12
 N_AGVS: int = 3
 AGV_SPEED: float = 1.0                        # m/s
 AGV_ENERGY_PER_KM: float = 3.7                # kWh / km
-AGV_ENERGY_PER_M: float = AGV_ENERGY_PER_KM * 1000 / 1000  # = 3.7 Wh / m
-# (3.7 kWh per km == 3700 Wh per 1000 m == 3.7 Wh per metre)
+AGV_ENERGY_PER_M: float = AGV_ENERGY_PER_KM   # 3.7 kWh/km == 3.7 Wh/m
 
 # ---------------------------------------------------------------------------
 # Lighting
