@@ -1,19 +1,14 @@
 """Order: a passive data carrier passed between OrderGenerator and AGV."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 
 @dataclass
 class Order:
-    """A pick request.
-
-    `pickup_ids` is structured as a list to keep multi-pickup orders trivial
-    to support later. In the current model every order has exactly one entry.
-    """
     order_id: int
-    pickup_ids: List[int]
+    pickup_ids: List[int]            # list to allow multi-pickup orders later
     creation_time: float
     completion_time: float | None = None
     served_by_agv: int | None = None

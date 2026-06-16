@@ -1,7 +1,4 @@
-"""OrderGenerator: samples exponential inter-arrival times and emits orders.
-
-Orders are deposited into a shared salabim Queue. AGVs poll this queue.
-"""
+"""OrderGenerator: emits orders on exponential inter-arrival times."""
 from __future__ import annotations
 
 import random
@@ -15,11 +12,6 @@ from components.order import Order
 
 
 class OrderGenerator(sim.Component):
-    """salabim component that creates orders on an exponential inter-arrival time.
-
-    The order queue is a plain `collections.deque` of `Order` objects (not a
-    `sim.Queue`) because `Order` is a passive dataclass, not a `sim.Component`.
-    """
 
     def setup(  # type: ignore[override]
         self,
@@ -34,9 +26,7 @@ class OrderGenerator(sim.Component):
         self.agvs = agvs or []
         self.mean = mean_interarrival_s
         self.next_order_id = 0
-        # local RNG so order arrivals & pickup choices are reproducible
-        # independently of any other module's random use
-        self._rng = random.Random(rng_seed)
+        self._rng = random.Random(rng_seed)  # own RNG for reproducibility
         self.orders_created: List[Order] = []
 
     def process(self):  # type: ignore[override]
@@ -54,8 +44,7 @@ class OrderGenerator(sim.Component):
             self.order_queue.append(order)
             self.orders_created.append(order)
 
-            # Wake up any standby AGV
-            for agv in self.agvs:
+            for agv in self.agvs:  # wake one standby AGV
                 if agv.ispassive():
                     agv.activate()
                     break

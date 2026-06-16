@@ -1,10 +1,8 @@
-"""AGV: pulls orders from the shared queue, traverses segments, picks, returns.
+"""AGV: pulls orders from the shared queue, travels, picks, returns.
 
-The AGV's lighting behaviour is controlled by `lighting_mode`:
-    "always_on"    - no interaction with the SLS; lights are managed externally.
-    "sensor_based" - on every segment entry/exit, call sls.sensor_enter/exit().
-    "route_based"  - on departure, route_activate every distinct segment on the
-                     full route; on return, route_release them.
+`lighting_mode` selects how it drives the SLS: "always_on" not at all,
+"sensor_based" via per-segment enter/exit, "route_based" via activate/release
+of the whole route.
 """
 from __future__ import annotations
 
@@ -50,17 +48,13 @@ class AGV(sim.Component):
         self.lighting_mode = lighting_mode
         self.speed = speed
 
-        # State
         self.current_node = NODE_BASE
         self.total_distance_m = 0.0
         self.total_time_travelled_s = 0.0
         self.orders_served: int = 0
-        # animation hook — current (x, y) position
-        self.x, self.y = self.graph.nodes[NODE_BASE]["pos"]
+        self.x, self.y = self.graph.nodes[NODE_BASE]["pos"]  # animation position
 
-    # ----------------------------------------------------------------- #
     def _segments_for_route(self, steps: List[RouteStep]) -> List[str]:
-        """Distinct ordered list of segment_ids the route touches."""
         return segments_touched(steps)
 
     def _activate_route_lights(self, segs: List[str]) -> None:
@@ -76,26 +70,22 @@ class AGV(sim.Component):
                 sls.route_release(self.agv_id)
 
     def _traverse(self, steps: List[RouteStep]):
-        """Generator: yield holds for each segment traversal.
-
-        In sensor-based mode, fires sensor_enter on entering each new segment
-        and sensor_exit when leaving it. Consecutive steps in the same segment
-        don't double-enter (the AGV is still inside).
-        """
+        """Hold for each step; in sensor mode fire enter/exit on transitions."""
         prev_seg: Optional[str] = None
 
         for step in steps:
-            # Detect segment transitions
             if self.lighting_mode == "sensor_based":
                 if step.segment_id != prev_seg:
-                    # exit the previous segment (if any), enter the new one
                     if prev_seg is not None and prev_seg in self.sls_by_seg:
                         self.sls_by_seg[prev_seg].sensor_exit()
                     if step.segment_id in self.sls_by_seg:
                         self.sls_by_seg[step.segment_id].sensor_enter()
 
-            # Hold for travel time
             travel_time = step.length / self.speed
+            assert step.length >= 0.0 and travel_time >= 0.0, (
+                f"[verify] non-physical step {step.from_node}->{step.to_node}: "
+                f"len={step.length}, t={travel_time}"
+            )
             yield self.hold(travel_time)
 
             self.total_distance_m += step.length
@@ -105,27 +95,19 @@ class AGV(sim.Component):
 
             prev_seg = step.segment_id
 
-        # On the very last step, exit the final segment
         if self.lighting_mode == "sensor_based" and prev_seg is not None:
             if prev_seg in self.sls_by_seg:
                 self.sls_by_seg[prev_seg].sensor_exit()
 
-    # ----------------------------------------------------------------- #
     def process(self):  # type: ignore[override]
         while True:
-            # Wait for an order
             while len(self.order_queue) == 0:
                 yield self.passivate()
 
             order: Order = self.order_queue.popleft()
             order.served_by_agv = self.agv_id
 
-            # For each pickup in the order (currently always 1, but the
-            # structure supports multi-pickup orders).
-            full_route_segments_for_lighting: List[str] = []
-
-            # Build the complete out-and-back route once so route-based mode
-            # can pre-activate all segments at departure.
+            # Build the full out-and-back route once (route mode pre-lights it).
             full_path = [self.current_node]
             running_node = self.current_node
             for pickup_id in order.pickup_ids:
@@ -166,5 +148,9 @@ class AGV(sim.Component):
 
             # Order complete
             order.completion_time = self.env.now()
+            assert order.completion_time >= order.creation_time, (
+                f"[verify] order {order.order_id} completes before it was created"
+            )
+            assert order.served_by_agv == self.agv_id
             self.orders_served += 1
 
